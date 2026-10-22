@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Monitoreo de Freezers</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"> Freezers </div>
+
+    <nav class="tabs">
+      <a href="#inicio" class="tab" data-tab="inicio">Inicio</a>
+      <a href="#historial" class="tab" data-tab="historial">Historial</a>
+    </nav>
+
+    <div class="status">
+      <span id="alarm-summary" class="alarm-summary" hidden></span>
+      <button id="sound-btn" class="btn" type="button">🔇 Activar sonido</button>
+      <span id="conn" class="conn conn--off">● Sin conexión</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- INICIO -->
+    <section id="view-inicio" class="view view--inicio">
+      <div id="grid" class="grid"></div>
+    </section>
+
+    <!-- HISTORIAL -->
+    <section id="view-historial" class="view view--historial" hidden>
+      <div id="hist-list" class="hist">
+        <h2>Historial por equipo</h2>
+        <ul id="hist-ul" class="hist-ul"></ul>
+      </div>
+
+      <div id="hist-detail" class="hist-detail" hidden>
+        <a href="#historial" class="btn btn--link">← Volver al listado</a>
+        <h2 id="hist-title"></h2>
+        <p id="hist-sub" class="muted"></p>
+        <p id="hist-msg" class="muted" hidden></p>
+        <div id="hist-stats" class="stats"></div>
+        <div class="chart-wrap"><canvas id="chart"></canvas></div>
+      </div>
+    </section>
+  </main>
+
+  <noscript>Esta página necesita JavaScript.</noscript>
+
+  <!-- Cliente MQTT para navegador (MQTT sobre WebSocket) -->
+  <script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
