@@ -30,15 +30,33 @@ Si ya lo tenés clonado, actualizalo con `git pull`.
 
 ## 3. Levantar el broker
 
-Siempre parado en la carpeta del repo:
+El compose levanta dos servicios: `mosquitto` (el broker) y `mysql` (la base
+de datos de la ingesta). Siempre parado en la carpeta del repo, elegí una:
+
+**Solo el broker** (alcanza para el simulador o para probar MQTT):
 
 ```powershell
+docker compose up -d mosquitto
+```
+
+**Todo (broker + MySQL)**: la primera vez, creá tu archivo de contraseñas
+copiando el modelo, y abrilo para poner contraseñas propias en lugar de
+`cambiar`. Ese `.env` no se sube a Git.
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
 docker compose up -d
+```
+
+Después, en ambos casos:
+
+```powershell
 docker compose ps
 ```
 
 En `STATUS` tiene que decir `Up ... (healthy)`. Los primeros segundos dice
-`(health: starting)`, es normal.
+`(health: starting)`, es normal. MySQL tarda más la primera vez (unos 30 s).
 
 El broker queda escuchando en el puerto `1883` y se vuelve a levantar solo
 cuando arranca Docker.
@@ -101,6 +119,7 @@ y leer. No lo dejes prendido en redes públicas cuando no lo estés usando.
 |---|---|---|
 | `no configuration file provided: not found` | No estás en la carpeta del repo. | `cd` a la carpeta donde está `docker-compose.yml`. |
 | `failed to connect to the docker API` | Docker Desktop no está corriendo (o no está instalado, solo el comando `docker`). | Abrir Docker Desktop y esperar *Engine running*. |
+| `The "MYSQL_ROOT_PASSWORD" variable is not set` y MySQL reiniciándose | Falta el archivo `.env`. | Crearlo desde `.env.example` (paso 3), o levantar solo el broker con `docker compose up -d mosquitto`. Si ya lo habías levantado sin `.env`, después de crearlo corré de nuevo `docker compose up -d`. |
 | `Bind for 0.0.0.0:1883 failed: port is already allocated` | Otro programa usa el 1883 (por ejemplo, Mosquitto instalado en Windows como servicio). | Parar ese servicio o desinstalarlo. |
 | Docker Desktop no arranca: `The file cannot be accessed by the system` (`dockerInference`, `engine.sock`) | Quedaron archivos de socket rotos de una ejecución anterior. | Pedir ayuda a Augusto: no se borran con `del`, hay que borrarlos de otra forma. *Reset to factory defaults* no lo arregla. |
 | Desde otra compu `TcpTestSucceeded : False` | La red no deja que las compus se vean entre sí, o la IP cambió. | Revisar la IP con `ipconfig`. Si sigue, probar con el hotspot de un celular. |
