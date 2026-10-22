@@ -30,8 +30,11 @@ Si ya lo tenés clonado, actualizalo con `git pull`.
 
 ## 3. Levantar el broker
 
-El compose levanta dos servicios: `mosquitto` (el broker) y `mysql` (la base
-de datos de la ingesta). Siempre parado en la carpeta del repo, elegí una:
+El compose levanta tres servicios: `mosquitto` (el broker), `mysql` (la base
+de datos de la ingesta) y `grafana` (panel de prueba en http://localhost:3000,
+usuario `admin`, contraseña `GRAFANA_ADMIN_PASSWORD` del `.env`). La ingesta
+se corre aparte: `ingesta/ingesta.py`. Siempre parado en la carpeta del repo,
+elegí una:
 
 **Solo el broker** (alcanza para el simulador o para probar MQTT):
 

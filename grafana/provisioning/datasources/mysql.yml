@@ -1,0 +1,15 @@
+# Conexión de Grafana a la base de la ingesta. Se crea sola al arrancar.
+apiVersion: 1
+
+datasources:
+  - name: MySQL
+    uid: mysql-desafio80
+    type: mysql
+    url: mysql:3306
+    # Juguete: reusa el usuario de la ingesta. En la versión real, uno de solo lectura.
+    user: ingesta
+    jsonData:
+      database: desafio80
+    secureJsonData:
+      password: ${MYSQL_PASSWORD}
+    isDefault: true
