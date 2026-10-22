@@ -52,7 +52,7 @@ Descarga oficial: [Python para Windows](https://www.python.org/downloads/windows
 
 No es necesario instalar Node.js ni implementar todavía el backend completo. El archivo `app.js` ya carga MQTT.js desde una CDN y puede comunicarse directamente con Mosquitto mediante WebSocket.
 
-## 3. Instalar Mosquitto en Windows
+## 3. Instalar Mosquitto en Windows (si podés...)
 
 1. Descarga el instalador de Windows desde el sitio oficial de Mosquitto.
 2. Ejecuta el instalador y, si ofrece la opción, incluye los componentes de cliente `mosquitto_pub` y `mosquitto_sub`.
