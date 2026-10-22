@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
 """
-Simulador MQTT para el panel web de super freezers.
+Simulador MQTT de super freezers (heladeras).
 
-Publica en Mosquitto:
-  freezers/config
-  freezers/<id>/info
-  freezers/<id>/estado
-  freezers/<id>/temperatura
+Publica una lectura por heladera cada N segundos en:
+  ifibyne/heladeras/<id>/lectura        (ej: ifibyne/heladeras/heladera-01/lectura)
 
-Configuración por defecto:
-  Broker: 127.0.0.1:1883
-  Prefijo de temas: freezers
-  20 equipos: eq01 ... eq20
+Mensaje JSON:
+  {"temp_c": -79.4, "ts": 1792690530}   (ts = int(time.time()))
+QoS 1, sin retained.
+
+Comportamientos (heladeras 1 a 5; el resto funciona normal):
+  1) normal
+  2) excursion: anda normal un rato, sube hasta -50 °C y vuelve a la normalidad (se repite)
+  3) defectuosa: la temperatura sube siempre
+  4) intermitente: anda bien a ratos, se corta y sube, vuelve a andar y baja (se repite)
+  5) outliers: estable, pero cada tanto emite un valor absurdamente alto (~45 °C)
 
 Instalación en Windows (PowerShell):
   py -m pip install paho-mqtt
 
 Ejecución:
   py simulador.py
+  py simulador.py --host 192.168.1.50 --intervalo 5
 
 Detener con Ctrl+C.
 """
 
+import argparse
 import json
+import math
 import random
-import signal
 import sys
 import time
-from datetime import datetime
 
 try:
     import paho.mqtt.client as mqtt
@@ -41,107 +45,164 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Configuración: debe coincidir con Mosquitto y config.js del panel web.
+# Configuración
 # ---------------------------------------------------------------------------
-MQTT_HOST = "127.0.0.1"
-MQTT_PORT = 1883
-MQTT_USERNAME = ""  # Dejar vacío si Mosquitto permite acceso anónimo local.
-MQTT_PASSWORD = ""
-
-TOPIC_BASE = "freezers"
-NUM_EQUIPOS = 20
-INTERVALO_SEGUNDOS = 2
-UMBRAL_ALARMA = -60.0
-MARGEN_AVISO = 5.0
+TOPIC_BASE = "ifibyne/heladeras"
 CLIENT_ID = "simulador-super-freezers"
+QOS = 1
 
-# Dos equipos fuera de servicio, uno en aviso y uno en alarma para poder
-# comprobar visualmente los distintos estados del panel.
-EQUIPOS_FUERA_SERVICIO = {19, 20}
-EQUIPO_AVISO = 2
-EQUIPO_ALARMA = 1
+TEMP_NORMAL = -79.5          # temperatura de trabajo habitual (°C)
+
+# Qué comportamiento tiene cada heladera (las no listadas son "normal")
+COMPORTAMIENTOS = {
+    1: "normal",
+    2: "excursion",
+    3: "defectuosa",
+    4: "intermitente",
+    5: "outliers",
+}
+
+# 2) Excursión: duración de cada tramo del ciclo, en segundos
+EXC_NORMAL = 240             # anda normal
+EXC_SUBIDA = 150             # sube hasta el pico
+EXC_PICO = 30                # se queda en el pico
+EXC_BAJADA = 150             # vuelve a la normalidad
+EXC_TEMP_PICO = -50.0
+
+# 3) Defectuosa: sube de forma exponencial hacia la temperatura ambiente
+DEF_AMBIENTE = 22.0
+DEF_TAU = 1500.0             # segundos; con 1500 llega a ~-50 °C a los ~8 min
+
+# 4) Intermitente
+INT_SUBE_C_POR_S = 0.25      # velocidad de subida durante la falla (°C/s)
+INT_BAJA_C_POR_S = 0.35      # velocidad de bajada al recuperarse (°C/s)
+INT_TEMP_MAX = -45.0
+INT_OK_SEG = (40, 100)       # duración aleatoria de los tramos "bien"
+INT_FALLA_SEG = (50, 90)     # duración aleatoria de los tramos "cortada"
+
+# 5) Outliers
+OUT_PROBABILIDAD = 0.05      # probabilidad de valor raro en cada lectura
+OUT_RANGO = (40.0, 50.0)
 
 random.seed()
 
 
-def publicar(client, topic, payload, retain=False):
-    """Publica un mensaje MQTT y avisa si no pudo encolarse."""
-    if not isinstance(payload, str):
-        payload = json.dumps(payload, ensure_ascii=False)
+# ---------------------------------------------------------------------------
+# Generación de temperaturas
+# ---------------------------------------------------------------------------
+def base_normal(numero, t):
+    """Temperatura normal sin ruido: variación lenta alrededor de -79.5 °C."""
+    return TEMP_NORMAL + 0.7 * math.sin(t / 18.0 + numero)
 
-    info = client.publish(topic, payload=payload, qos=0, retain=retain)
+
+def ruido(amplitud=0.25):
+    return random.uniform(-amplitud, amplitud)
+
+
+def suavizar(x):
+    """Interpolación suave (0 -> 1) para que las subidas/bajadas no sean lineales."""
+    x = max(0.0, min(1.0, x))
+    return x * x * (3 - 2 * x)
+
+
+class Heladera:
+    def __init__(self, numero):
+        self.numero = numero
+        self.id = f"heladera-{numero:02d}"
+        self.comportamiento = COMPORTAMIENTOS.get(numero, "normal")
+
+        # Estado interno para el comportamiento intermitente
+        self.fase = "ok"
+        self.fase_hasta = random.uniform(*INT_OK_SEG)
+        self.temp_interm = base_normal(numero, 0)
+
+    def leer(self, t, dt):
+        """Devuelve la temperatura (°C) en el instante t (segundos desde el inicio)."""
+        metodo = getattr(self, "_" + self.comportamiento)
+        return round(metodo(t, dt), 1)
+
+    # 1) Normal -------------------------------------------------------------
+    def _normal(self, t, dt):
+        return base_normal(self.numero, t) + ruido()
+
+    # 2) Excursión: normal -> sube a -50 -> vuelve -------------------------------
+    def _excursion(self, t, dt):
+        periodo = EXC_NORMAL + EXC_SUBIDA + EXC_PICO + EXC_BAJADA
+        pos = t % periodo
+        base = base_normal(self.numero, t)
+
+        if pos < EXC_NORMAL:
+            return base + ruido()
+
+        pos -= EXC_NORMAL
+        if pos < EXC_SUBIDA:
+            s = suavizar(pos / EXC_SUBIDA)
+            return base + (EXC_TEMP_PICO - base) * s + ruido(0.3)
+
+        pos -= EXC_SUBIDA
+        if pos < EXC_PICO:
+            return EXC_TEMP_PICO + ruido(0.3)
+
+        pos -= EXC_PICO
+        s = suavizar(pos / EXC_BAJADA)
+        return EXC_TEMP_PICO + (base - EXC_TEMP_PICO) * s + ruido(0.3)
+
+    # 3) Defectuosa: siempre sube ---------------------------------------------
+    def _defectuosa(self, t, dt):
+        temp = DEF_AMBIENTE - (DEF_AMBIENTE - TEMP_NORMAL) * math.exp(-t / DEF_TAU)
+        return temp + ruido(0.2)
+
+    # 4) Intermitente: bien -> se corta y sube -> vuelve y baja ------------------
+    def _intermitente(self, t, dt):
+        base = base_normal(self.numero, t)
+
+        if self.fase == "ok":
+            self.temp_interm = base
+            if t >= self.fase_hasta:
+                self.fase = "falla"
+                self.fase_hasta = t + random.uniform(*INT_FALLA_SEG)
+
+        elif self.fase == "falla":
+            self.temp_interm = min(
+                self.temp_interm + INT_SUBE_C_POR_S * dt * random.uniform(0.7, 1.3),
+                INT_TEMP_MAX,
+            )
+            if t >= self.fase_hasta:
+                self.fase = "recupera"
+
+        else:  # recupera
+            self.temp_interm = max(
+                self.temp_interm - INT_BAJA_C_POR_S * dt * random.uniform(0.8, 1.2),
+                base,
+            )
+            if self.temp_interm <= base:
+                self.fase = "ok"
+                self.fase_hasta = t + random.uniform(*INT_OK_SEG)
+
+        return self.temp_interm + ruido(0.2)
+
+    # 5) Estable con valores atípicos ------------------------------------------
+    def _outliers(self, t, dt):
+        if random.random() < OUT_PROBABILIDAD:
+            return random.uniform(*OUT_RANGO)
+        return TEMP_NORMAL + ruido(0.2)
+
+
+# ---------------------------------------------------------------------------
+# MQTT
+# ---------------------------------------------------------------------------
+def publicar(client, topic, payload):
+    """Publica con QoS 1, sin retained. Avisa si no pudo encolarse."""
+    info = client.publish(
+        topic,
+        payload=json.dumps(payload, ensure_ascii=False),
+        qos=QOS,
+        retain=False,
+    )
     if info.rc != mqtt.MQTT_ERR_SUCCESS:
         print(f"[ERROR] No se pudo publicar en {topic}: código {info.rc}")
         return False
     return True
-
-
-def nombre_grupo(numero):
-    """Asigna grupos ficticios para identificar los equipos en la demo."""
-    grupos = ["Pérez", "Gómez", "Laboratorio A", "Laboratorio B"]
-    return grupos[(numero - 1) % len(grupos)]
-
-
-def publicar_datos_iniciales(client):
-    """Publica configuración, metadatos y estado inicial de cada equipo."""
-    publicar(
-        client,
-        f"{TOPIC_BASE}/config",
-        {"umbral": UMBRAL_ALARMA, "margen": MARGEN_AVISO},
-        retain=True,
-    )
-
-    for numero in range(1, NUM_EQUIPOS + 1):
-        equipo_id = f"eq{numero:02d}"
-
-        # El panel espera info como JSON: numero, grupo y piso.
-        publicar(
-            client,
-            f"{TOPIC_BASE}/{equipo_id}/info",
-            {
-                "numero": 59 + numero,
-                "grupo": nombre_grupo(numero),
-                "piso": 1 + ((numero - 1) % 4),
-            },
-            retain=True,
-        )
-
-        estado = (
-            "no funcionando"
-            if numero in EQUIPOS_FUERA_SERVICIO
-            else "funcionando"
-        )
-        publicar(
-            client,
-            f"{TOPIC_BASE}/{equipo_id}/estado",
-            estado,
-            retain=True,
-        )
-
-    print(f"[OK] Metadatos publicados para {NUM_EQUIPOS} equipos.")
-    print(f"[OK] Umbral de alarma: {UMBRAL_ALARMA:.1f} °C")
-    print(f"[OK] Margen de aviso: {MARGEN_AVISO:.1f} °C")
-
-
-def temperatura_simulada(numero, tiempo):
-    """
-    Genera una temperatura ficticia en °C.
-    Equipo 1: alarma, por encima de -70 °C.
-    Equipo 2: aviso, dentro del margen configurable.
-    Equipos 19 y 20: fuera de servicio; no se publican temperaturas nuevas.
-    Resto: temperaturas normales próximas a -80 °C.
-    """
-    if numero == EQUIPO_ALARMA:
-        # Mantiene una temperatura insegura para que la alarma sea visible.
-        return round(-68.5 + random.uniform(-0.5, 0.5), 1)
-
-    if numero == EQUIPO_AVISO:
-        # Entre el umbral y el límite de aviso, según la lógica del panel.
-        return round(-73.0 + random.uniform(-0.5, 0.5), 1)
-
-    # Temperaturas normales con una variación lenta y ruido pequeño.
-    base = -79.5 + 0.7 * __import__("math").sin(tiempo / 18.0 + numero)
-    return round(base + random.uniform(-0.25, 0.25), 1)
 
 
 def al_conectar(client, userdata, flags, reason_code, properties=None):
@@ -152,8 +213,7 @@ def al_conectar(client, userdata, flags, reason_code, properties=None):
         correcto = str(reason_code).lower() in ("success", "0")
 
     if correcto:
-        print(f"[OK] Conectado a Mosquitto en {MQTT_HOST}:{MQTT_PORT}")
-        publicar_datos_iniciales(client)
+        print(f"[OK] Conectado a Mosquitto en {userdata['host']}:{userdata['port']}")
     else:
         print(f"[ERROR] No se pudo conectar a Mosquitto: {reason_code}")
 
@@ -167,73 +227,97 @@ def al_desconectar(client, userdata, disconnect_flags, reason_code, properties=N
         print(f"[AVISO] Se perdió la conexión con Mosquitto: {reason_code}")
 
 
+def parsear_argumentos():
+    p = argparse.ArgumentParser(description="Simulador MQTT de super freezers")
+    p.add_argument("--host", default="localhost", help="host del broker (default: localhost)")
+    p.add_argument("--puerto", type=int, default=1883, help="puerto del broker (default: 1883)")
+    p.add_argument(
+        "--intervalo", type=float, default=5.0,
+        help="segundos entre lecturas de cada heladera (default: 5)",
+    )
+    p.add_argument("--cantidad", type=int, default=20, help="cantidad de heladeras (default: 20)")
+    p.add_argument("--usuario", default="", help="usuario MQTT (opcional)")
+    p.add_argument("--password", default="", help="contraseña MQTT (opcional)")
+    args = p.parse_args()
+
+    if args.intervalo <= 0:
+        p.error("--intervalo debe ser mayor que 0")
+    if args.cantidad < 1:
+        p.error("--cantidad debe ser al menos 1")
+    return args
+
+
 def main():
-    # Callback API VERSION2 funciona con paho-mqtt 2.x.
+    args = parsear_argumentos()
+
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id=CLIENT_ID,
         protocol=mqtt.MQTTv311,
+        userdata={"host": args.host, "port": args.puerto},
     )
-
-    if MQTT_USERNAME:
-        client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    if args.usuario:
+        client.username_pw_set(args.usuario, args.password)
 
     client.on_connect = al_conectar
     client.on_disconnect = al_desconectar
     client.reconnect_delay_set(min_delay=1, max_delay=10)
 
+    heladeras = [Heladera(n) for n in range(1, args.cantidad + 1)]
+
     print("Simulador de super freezers")
-    print(f"Broker: {MQTT_HOST}:{MQTT_PORT}")
-    print(f"Temas: {TOPIC_BASE}/...")
+    print(f"Broker: {args.host}:{args.puerto}")
+    print(f"Temas: {TOPIC_BASE}/<id>/lectura  (QoS {QOS}, sin retained)")
+    print("Comportamientos especiales:")
+    for h in heladeras:
+        if h.numero in COMPORTAMIENTOS:
+            print(f"  {h.id}: {h.comportamiento}")
     print("Conectando...")
 
     try:
-        client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
+        client.connect(args.host, args.puerto, keepalive=30)
     except OSError as exc:
         print(f"[ERROR] No se pudo conectar a Mosquitto: {exc}")
         print(
             "Verificá que Mosquitto esté ejecutándose y escuchando "
-            f"en {MQTT_HOST}:{MQTT_PORT}."
+            f"en {args.host}:{args.puerto}."
         )
         raise SystemExit(1)
 
     client.loop_start()
 
     try:
-        # Espera a que el callback de conexión publique los datos iniciales.
         while not client.is_connected():
             time.sleep(0.2)
 
         print(
-            f"[OK] Enviando temperaturas cada {INTERVALO_SEGUNDOS} segundos. "
+            f"[OK] Enviando una lectura por heladera cada {args.intervalo:g} segundos. "
             "Presioná Ctrl+C para detener."
         )
 
         inicio = time.monotonic()
+        proximo = inicio
+
         while True:
-            ahora = time.monotonic()
-            segundos = ahora - inicio
+            t = time.monotonic() - inicio
+            ts = int(time.time())
 
-            for numero in range(1, NUM_EQUIPOS + 1):
-                if numero in EQUIPOS_FUERA_SERVICIO:
-                    # No enviar temperatura nueva: el panel debe mostrar
-                    # el estado "no funcionando" publicado como retained.
-                    continue
-
-                equipo_id = f"eq{numero:02d}"
-                temp = temperatura_simulada(numero, segundos)
+            for h in heladeras:
+                temp = h.leer(t, args.intervalo)
                 publicar(
                     client,
-                    f"{TOPIC_BASE}/{equipo_id}/temperatura",
-                    f"{temp:.1f}",
-                    retain=False,
+                    f"{TOPIC_BASE}/{h.id}/lectura",
+                    {"temp_c": temp, "ts": ts},
                 )
+                etiqueta = f" ({h.comportamiento})" if h.numero in COMPORTAMIENTOS else ""
                 print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] "
-                    f"{equipo_id}  {temp:.1f} °C"
+                    f"[{time.strftime('%H:%M:%S')}] "
+                    f"{h.id}{etiqueta}  {temp:.1f} °C"
                 )
 
-            time.sleep(INTERVALO_SEGUNDOS)
+            # Programar el próximo ciclo sin acumular deriva.
+            proximo += args.intervalo
+            time.sleep(max(0.0, proximo - time.monotonic()))
 
     except KeyboardInterrupt:
         print("\nDeteniendo simulador...")
