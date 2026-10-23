@@ -396,7 +396,7 @@ const CONFIG = {
   TOPIC_BASE: "freezers",
 
   API_EQUIPOS: "",
-  API_HISTORIAL: "/api/historial/{id}",
+  API_HISTORIAL: "http://127.0.0.1:5000/api/historial/{id}",
 
   UMBRAL_ALARMA: -70,
   MARGEN_AVISO: 5,
@@ -541,7 +541,11 @@ La ruta `API_HISTORIAL: "/api/historial/{id}"` no funcionará por sí sola. Nece
 3. Exponga una API HTTP para consultar el historial.
 4. Devuelva los datos en el formato que espera `app.js`.
 
-Podemos incorporar ese backend como un cuarto servicio de Docker, junto con una base de datos SQLite para empezar. Así, podremos conservar el historial aunque se reinicie el simulador.
+El historial está gestionado por el servicio `backend`, el cual se divide en dos procesos clave:
+1. **ingesta.py**: Recibe las temperaturas publicadas en MQTT y las guarda en una base de datos SQLite (`historial.db`).
+2. **api.py**: Expone una API HTTP mediante Flask en el puerto `5000`. Al consultar la ruta `/api/historial/{id}`, devuelve las temperaturas históricas formateadas en JSON para que el front-end dibuje los gráficos.
+
+Ambos servicios comparten un volumen de Docker (`db_data`) que garantiza la persistencia de los registros aunque los contenedores se reinicien.
 
 ## 10. Comandos útiles de Docker
 
