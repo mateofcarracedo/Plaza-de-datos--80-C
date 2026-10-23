@@ -355,9 +355,12 @@ También se puede utilizar un objeto JSON si el código del front-end está prep
 }
 ```
 
-## 10. Historial de temperaturas: trabajo pendiente
+## 10. Backend y el Historial de Temperaturas
+El backend ya está desarrollado e implementado en la carpeta `backend/`. Se encarga de suscribirse a Mosquitto para guardar las temperaturas en una base de datos SQLite y de levantar una API web con Flask para servir esos datos al historial del navegador.
 
-El historial todavía necesita un backend Python con almacenamiento y una ruta HTTP que permita recuperar las mediciones anteriores.
+Dado que requiere de dos procesos corriendo en paralelo (`ingesta.py` y `api.py`), la forma recomendada y oficial de ejecutar el entorno completo es utilizando Docker.
+En ingesta.py, solo se toman en cuenta temperaturas dentro de un rango lógico (-150 <= temperatura <= 50), esto es para filtrar cortocircuitos de la sonda, fallas del modulo/sensor, errores relacionados al hardware y no llenar el historial con estos datos. 
+Por favor, consulta el archivo **instrucciones_docker.md** para levantar automáticamente el broker Mosquitto, el simulador de datos, la API de historial y el front-end web con un único comando de Docker Compose.
 
 La ruta configurada actualmente es:
 
