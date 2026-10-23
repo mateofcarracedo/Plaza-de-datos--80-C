@@ -46,7 +46,7 @@ const CONFIG = {
 
   // Endpoints del back-end (rutas relativas o absolutas)
   API_EQUIPOS: "",                       // opcional, ej. "/api/equipos"
-  API_HISTORIAL: "/api/historial/{id}",
+  API_HISTORIAL: "http://127.0.0.1:5000/api/historial/{id}",
 
   // Alarma: se activa cuando temp > UMBRAL_ALARMA (°C)
   UMBRAL_ALARMA: -70,
