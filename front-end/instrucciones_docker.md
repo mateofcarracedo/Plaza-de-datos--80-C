@@ -27,10 +27,15 @@ C:\freezers-docker\
 │   ├── styles.css
 │   ├── config.js
 │   └── app.js
-└── simulador\
+├── simulador\
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── simulador.py
+└── backend\
     ├── Dockerfile
     ├── requirements.txt
-    └── simulador.py
+    ├── ingesta.py
+    └── api.py
 ```
 
 Copia tus cuatro archivos actuales del front-end a `C:\freezers-docker\frontend\`. Conservaremos tu HTML, CSS y JavaScript, y modificaremos únicamente la configuración de conexión MQTT.
@@ -330,8 +335,34 @@ services:
     depends_on:
       - mosquitto
 
+  ingesta:
+    build:
+      context: ./backend
+    container_name: freezers-ingesta
+    command: python -u ingesta.py
+    restart: unless-stopped
+    environment:
+      MQTT_HOST: mosquitto
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    volumes:
+      - db_data:/datos
+
+  api:
+    build:
+      context: ./backend
+    container_name: freezers-api
+    command: python -u api.py
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - db_data:/datos
+
 volumes:
   mosquitto_data:
+  db_data:
 ```
 
 ### ¿Qué hace cada servicio?
@@ -340,6 +371,8 @@ volumes:
 - **simulador:** construye la imagen de Python e inicia el script automáticamente.
 - **frontend:** publica tus cuatro archivos web mediante Nginx.
 - **mosquitto_data:** conserva los datos persistentes del broker cuando el contenedor se reinicia.
+- **ingesta:** se suscribe al broker MQTT, ataja las temperaturas y las guarda en una base de datos SQLite.
+- **api:** levanta un servidor Flask en el puerto 5000 para proveer el historial de temperaturas al front-end.
 
 Los puertos publicados están limitados a `127.0.0.1`, para que estos servicios de prueba no queden expuestos directamente a otras máquinas de la red.
 
